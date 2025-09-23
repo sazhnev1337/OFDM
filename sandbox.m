@@ -59,3 +59,16 @@ string = [1, 2, 3, 4, 5, 6]
 
 maatrix1 = reshape(string, 3, 2).'
 maatrix2 = reshape(string, 2, 3)
+
+
+A = [1,2,3; 4,5,6; 7,8,9]
+
+A = A(:,1:end-1)
+
+
+snr_array = [1:0.2:3]
+
+
+
+
+BERSNR_array = zeros(3, 10, "double")
