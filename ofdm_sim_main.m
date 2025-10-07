@@ -10,8 +10,10 @@ addpath('my_functions_2/');
 
 % General
 
-Nc = 72;            % Number of subcarriers
+Nc = 100;            % Number of subcarriers
 Nfft = 256;         % Number of fft and ifft points
+
+Mapping_type = 16;
 
 clipping_enable   = 1;
 CR = 2.5;             % Clipping ratio 
@@ -21,7 +23,7 @@ scrambling_enable = 1;
 SNR = 15;           % Default value of SNR
 clear_channel = 0;  % Mode when simulation goes without adding AWGN in channel
 
-CCDF_calc_enable = 1;  % (Complement cumulative density function) enable calculation 
+CCDF_calc_enable = 0;  % (Complement cumulative density function) enable calculation 
 
 
 
@@ -51,10 +53,11 @@ else
 end
 
 % Figures displaying settings
-cliping_effect_sh = "off";  % Picture shows the effect of clipling
-src_pic_sh = "off";         % Source picture
-fin_pic_sh = "off";         % Final picture
+cliping_effect_sh = "on";  % Picture shows the effect of clipling
+src_pic_sh = "on";         % Source picture
+fin_pic_sh = "on";         % Final picture
 other_pic_disp = 0;        % Any other picture
+constellation_show_en = 1;
 
 % Logging settings
 debug_mod         = 1;
@@ -68,6 +71,15 @@ else
     fin_pic_log="off";
 end
 
+% Non linsear amplifier model and constellation diagramm settings 
+
+amp_en = 1; % Amplifier enable/disable
+gain = 10;
+
+amplifier = comm.MemorylessNonlinearity(Method="Cubic polynomial", ...
+    LinearGain=gain,AMPMConversion=0);
+
+% plot(amplifier)
 
 % ###########################################################################
 % ############################## Main part ##################################
@@ -90,8 +102,22 @@ end
  
 %% MAPPER
 
+if Mapping_type == 4
+    % My QPSK
     vector_of_sym = qpsk_mapper_2(scrambled_binary_vector);
 
+elseif Mapping_type == 16
+    % Built-in 16-QAM, работаем напрямую с битами
+    M = 16;
+    
+    % Просто передаем скремблированный вектор в модулятор
+    vector_of_sym = qammod(int32(scrambled_binary_vector), M, 'InputType', 'bit', ...
+        'UnitAveragePower', true);
+end
+
+if constellation_show_en == 1
+    scatterplot(vector_of_sym);
+end
 %% SERIAL TO PARALLEL
 
 Lsym = length(vector_of_sym);
@@ -155,14 +181,7 @@ if clipping_enable == 1
     A = CR * sigma;
     x_clip_matrix = min(x_matrix, A);
 
-    if cliping_effect_sh == "on" 
-        figure;
-        grid on;
-        hold on;
-        t = 1:length(x_clip); 
-        plot(t, reshape(x_clip_matrix.', [], 1).',      'b-', 'Linewidth', 1.5);
-        plot(t, reshape(x_matrix.', [], 1).', 'r-', 'Linewidth', 1.5)
-    end
+    x_no_clip_matrix = x_matrix;
     x_matrix = x_clip_matrix;
 end
 
@@ -192,22 +211,63 @@ end
 
 
 %% PARALLEL TO SERIAL
+
 x = reshape(x_matrix.', [], 1).';
+if clipping_enable == 1
+    x_no_clip = reshape(x_no_clip_matrix.', [], 1).';
+end
 
 if debug_mod == 1
     disp(['size of x: ', num2str(size(x))]);
 end
 
 
+%% Amplifier 
+
+% Scaling
+target_power = 25; % dBm
+    scaled_x = scaleSignalToPower(x, target_power);
+if clipping_enable == 1
+    scaled_x_no_clip = scaleSignalToPower(x_no_clip, target_power);
+end
+
+if cliping_effect_sh == "on" & clipping_enable == 1
+    figure;
+    grid on;
+    hold on;
+    t = 1:length(x); 
+    power_signal_clipping = abs(scaled_x).^2;
+    power_signal = abs(scaled_x_no_clip).^2;
+    plot(t, 10*log10(power_signal/0.001), 'r-', 'Linewidth', 1)
+    plot(t, 10*log10(power_signal_clipping/0.001),      'b-', 'Linewidth', 0.7); 
+    ylabel("power, dBm")
+    xlabel("t, c")
+    ylim([0, 35]);
+    label2 = "with clipping with CR = " +  num2str(CR);
+    legend('without clipping',label2)
+end
+
+
+power = mean(abs(scaled_x).^2);
+if amp_en == 1
+    ampOut = amplifier(scaled_x);
+else
+    ampOut = scaled_x;
+end
+
 %% CHANNEL & NOISE
 
 % Main cycle for different snr
 for i = 1:length(snr_array) 
     if clear_channel == 1
-        y = x;
+        y = ampOut;
     else
-        y = awgn(x, snr_array(i), 'measured');
+        y = awgn(ampOut, snr_array(i), 'measured');
     end
+
+    % Descaling. Generally speaking, it is optional, since the 
+    % unit power normalization is used on the demodulator.
+    y = scaleSignalToPower(y, 20); % 30 dBm 
 
     %% SERIAL TO PARALLEL
 
@@ -276,9 +336,21 @@ for i = 1:length(snr_array)
     end
 
     %% DEMAPPER
-
-    binary_rvector = int32(qpsk_demapper_2(vector_of_rsym)).';
-
+    vector_of_rsym = scaleSignalToPower(vector_of_rsym, 30); % 30 dBm 
+    if constellation_show_en == 1
+        scatterplot(vector_of_rsym);
+    end
+    if Mapping_type == 4
+        % My QPSK
+        binary_rvector = int32(qpsk_demapper_2(vector_of_rsym)).';
+    elseif Mapping_type == 16
+        % Built-in 16-QAM, получаем на выходе биты
+        M = 16;
+        
+        % Демодулятор сразу возвращает нужный нам битовый вектор
+        binary_rvector = qamdemod(vector_of_rsym, M, 'OutputType', 'bit', ...
+            'UnitAveragePower', true);
+    end
     %% DESCRAMBLER    
 
     if scrambling_enable == 1
@@ -288,7 +360,7 @@ for i = 1:length(snr_array)
     end
 
     % Counting number of errors for this SNR
-    BER(i) = sum(descrambled_binary_rvector ~= binary_vector);
+    BER(i) = sum(descrambled_binary_rvector ~= binary_vector)/length(binary_vector);
 
     % Check for shift registers of scrambler and descrambler are equal afterall.
     if clear_channel == 1
@@ -315,14 +387,14 @@ if BER_SNR_calc_en == 1
 
     graph_name = 'BER SNR';
     if clipping_enable == 1
-        graph_name = [graph_name, ' with clipping']; 
+        graph_name = [graph_name, ' with clipping', 'CR=', num2str(CR)]; 
     end
     if scrambling_enable == 1
         graph_name = [graph_name, ' with scrambling'];
     end
 
     name_to_save_data = ['figures/', graph_name, '.mat'];
-    save(name_to_save_data, 'snr_array', 'BER', "graph_name", "CR"); 
+    save(name_to_save_data, 'snr_array', 'BER', "graph_name", "CR", "power"); 
 
     disp(['Data saved to: ', name_to_save_data]);
 end

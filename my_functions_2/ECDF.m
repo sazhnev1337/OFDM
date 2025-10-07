@@ -1,4 +1,5 @@
 function [F, x] = ECDF(data)
+    
     % Calculation of Emperical cumulativr density function
 
     % Remove 'NaN' data
